@@ -4,6 +4,8 @@ const codec = @import("mqtt_codec");
 
 const Allocator = types.Allocator;
 const net = std.Io.net;
+const Reader = std.Io.Reader;
+const Writer = std.Io.Writer;
 
 /// TCP トランスポート層: MQTT パケットの読み書きを担当
 pub const Transport = struct {
@@ -30,49 +32,37 @@ pub const Transport = struct {
         self.stream.close(self.io);
     }
 
-    /// バイト列を送信
-    pub fn send(self: *Transport, data: []const u8) !void {
-        var writer_buffer: [8192]u8 = undefined;
-        var writer = self.stream.writer(self.io, &writer_buffer);
-        try writer.interface.writeAll(data);
-        try writer.interface.flush();
+    /// Writer を使って送信 (flush 込み)
+    pub fn sendWith(w: *Writer, data: []const u8) !void {
+        try w.writeAll(data);
+        try w.flush();
     }
 
-    /// 固定ヘッダを読み取り、残りのデータを含む完全なパケットを返す
+    /// Reader から1パケット読み取り
     pub const ReadResult = struct {
         header: codec.FixedHeader,
         data: []u8,
     };
 
-    pub fn readPacket(self: *Transport) !ReadResult {
-        var reader_buffer: [8192]u8 = undefined;
-        var reader = self.stream.reader(self.io, &reader_buffer);
-
-        // 固定ヘッダの最初のバイトを読む
+    pub fn readPacketWith(r: *Reader, allocator: Allocator) !ReadResult {
         var header_buf: [5]u8 = undefined;
-        reader.interface.readSliceAll(header_buf[0..1]) catch |err| switch (err) {
+        r.readSliceAll(header_buf[0..1]) catch |err| switch (err) {
             error.EndOfStream => return error.ConnectionClosed,
             else => return err,
         };
 
-        // Remaining Length を読む (最大4バイト)
         var rl_len: usize = 0;
         while (rl_len < 4) {
-            try reader.interface.readSliceAll(header_buf[1 + rl_len ..][0..1]);
+            try r.readSliceAll(header_buf[1 + rl_len ..][0..1]);
             rl_len += 1;
             if (header_buf[rl_len] & 0x80 == 0) break;
         }
 
         const header = try codec.decodeFixedHeader(header_buf[0 .. 1 + rl_len]);
+        const data = try allocator.alloc(u8, header.remaining_length);
+        errdefer allocator.free(data);
+        try r.readSliceAll(data);
 
-        // Remaining bytes を読む
-        const data = try self.allocator.alloc(u8, header.remaining_length);
-        errdefer self.allocator.free(data);
-        try reader.interface.readSliceAll(data);
-
-        return .{
-            .header = header,
-            .data = data,
-        };
+        return .{ .header = header, .data = data };
     }
 };

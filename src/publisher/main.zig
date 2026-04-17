@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
 
     std.log.info("Connecting to {s}:{d}...", .{ host, port });
 
-    var client = try MqttClient.connect(init.gpa, init.io, host, port, ConnectOptions{
+    const client = try MqttClient.connect(init.gpa, init.io, host, port, ConnectOptions{
         .client_id = "mqtt-zig-pub",
     });
 

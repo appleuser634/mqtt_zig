@@ -7,6 +7,9 @@ const Transport = @import("mqtt_transport").Transport;
 const Allocator = types.Allocator;
 const QoS = types.QoS;
 const ConnectFlags = types.ConnectFlags;
+const net = std.Io.net;
+const Reader = std.Io.Reader;
+const Writer = std.Io.Writer;
 
 /// MQTT クライアントの接続オプション
 pub const ConnectOptions = struct {
@@ -22,16 +25,37 @@ pub const ConnectOptions = struct {
 };
 
 /// MQTT v3.1.1 クライアント
+/// heap 上に確保し、reader/writer バッファの寿命を保証する
 pub const MqttClient = struct {
-    transport: Transport,
+    stream: net.Stream,
+    io: std.Io,
     allocator: Allocator,
     next_packet_id: u16 = 1,
+    read_buf: [8192]u8 = undefined,
+    write_buf: [8192]u8 = undefined,
+    reader: net.Stream.Reader = undefined,
+    writer: net.Stream.Writer = undefined,
 
-    /// ブローカーに接続
-    pub fn connect(allocator: Allocator, io: std.Io, host: []const u8, port: u16, opts: ConnectOptions) !MqttClient {
-        var transport = try Transport.connect(allocator, io, host, port);
-        errdefer transport.close();
+    /// ブローカーに接続し、heap 上に MqttClient を作成
+    pub fn connect(allocator: Allocator, io: std.Io, host: []const u8, port: u16, opts: ConnectOptions) !*MqttClient {
+        const address = try net.IpAddress.parseIp4(host, port);
+        const stream = try net.IpAddress.connect(&address, io, .{
+            .mode = .stream,
+            .protocol = .tcp,
+        });
+        errdefer stream.close(io);
 
+        // heap に確保してバッファのアドレスを安定させる
+        const self = try allocator.create(MqttClient);
+        self.* = .{
+            .stream = stream,
+            .io = io,
+            .allocator = allocator,
+        };
+        self.reader = self.stream.reader(io, &self.read_buf);
+        self.writer = self.stream.writer(io, &self.write_buf);
+
+        // CONNECT パケットを構築・送信
         var flags = ConnectFlags{
             .clean_session = opts.clean_session,
         };
@@ -55,19 +79,17 @@ pub const MqttClient = struct {
 
         const encoded = try codec.encodeConnect(allocator, &connect_pkt);
         defer allocator.free(encoded);
-        try transport.send(encoded);
+        try Transport.sendWith(&self.writer.interface, encoded);
 
-        const result = try transport.readPacket();
+        // CONNACK を受信
+        const result = try Transport.readPacketWith(&self.reader.interface,allocator);
         defer allocator.free(result.data);
 
         if (result.header.packet_type != .connack) return error.ProtocolError;
         const connack = try codec.decodeConnack(result.data);
         if (connack.return_code != .accepted) return error.ConnectionRefused;
 
-        return .{
-            .transport = transport,
-            .allocator = allocator,
-        };
+        return self;
     }
 
     /// メッセージをパブリッシュ
@@ -87,10 +109,10 @@ pub const MqttClient = struct {
 
         const encoded = try codec.encodePublish(self.allocator, &publish_pkt);
         defer self.allocator.free(encoded);
-        try self.transport.send(encoded);
+        try Transport.sendWith(&self.writer.interface, encoded);
 
         if (qos == .at_least_once) {
-            const result = try self.transport.readPacket();
+            const result = try Transport.readPacketWith(&self.reader.interface,self.allocator);
             defer self.allocator.free(result.data);
             if (result.header.packet_type != .puback) return error.ProtocolError;
         }
@@ -105,9 +127,10 @@ pub const MqttClient = struct {
 
         const encoded = try codec.encodeSubscribe(self.allocator, &sub_pkt);
         defer self.allocator.free(encoded);
-        try self.transport.send(encoded);
+        try Transport.sendWith(&self.writer.interface, encoded);
 
-        const result = try self.transport.readPacket();
+        // SUBACK を待つ
+        const result = try Transport.readPacketWith(&self.reader.interface,self.allocator);
         defer self.allocator.free(result.data);
         if (result.header.packet_type != .suback) return error.ProtocolError;
     }
@@ -115,7 +138,7 @@ pub const MqttClient = struct {
     /// 受信パケットを1つ読み取る
     pub fn readMessage(self: *MqttClient) !ReceivedMessage {
         while (true) {
-            const result = try self.transport.readPacket();
+            const result = try Transport.readPacketWith(&self.reader.interface,self.allocator);
 
             switch (result.header.packet_type) {
                 .publish => {
@@ -127,7 +150,7 @@ pub const MqttClient = struct {
                             var buf: [4]u8 = undefined;
                             const puback_pkt = pkt.PubackPacket{ .packet_id = pid };
                             const puback = try codec.encodePuback(&buf, &puback_pkt);
-                            try self.transport.send(puback);
+                            try Transport.sendWith(&self.writer.interface, puback);
                         }
                     }
 
@@ -150,8 +173,9 @@ pub const MqttClient = struct {
     pub fn disconnect(self: *MqttClient) !void {
         var buf: [2]u8 = undefined;
         const data = try codec.encodeDisconnect(&buf);
-        self.transport.send(data) catch {};
-        self.transport.close();
+        Transport.sendWith(&self.writer.interface, data) catch {};
+        self.stream.close(self.io);
+        self.allocator.destroy(self);
     }
 
     fn nextPacketId(self: *MqttClient) u16 {
