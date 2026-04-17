@@ -1,0 +1,33 @@
+sequenceDiagram
+    participant P as Publisher
+    participant B as Broker
+    participant S as Subscriber
+
+    Note over P,S: QoS 0: Fire-and-Forget
+
+    P->>B: PUBLISH (QoS=0, topic="sensor/temp", payload="25.3")
+    Note right of P: Packet ID なし<br/>確認応答なし
+    B->>S: PUBLISH (QoS=0, topic="sensor/temp", payload="25.3")
+    Note over P,S: メッセージロスの可能性あり
+
+    Note over P,S: ────────────────────────
+
+    Note over P,S: QoS 1: At Least Once
+
+    P->>B: PUBLISH (QoS=1, id=1, topic="sensor/temp", payload="26.1")
+    B->>P: PUBACK (id=1)
+    Note right of B: Broker は Packet ID=1 の<br/>PUBLISH を受信確認
+
+    B->>S: PUBLISH (QoS=1, id=100, topic="sensor/temp", payload="26.1")
+    Note right of B: Subscriber への配信時は<br/>Broker が新しい Packet ID を割り当て
+    S->>B: PUBACK (id=100)
+
+    Note over P,S: ────────────────────────
+
+    Note over P,S: QoS 1: 再送シナリオ
+
+    P->>B: PUBLISH (QoS=1, id=2, topic="alert/fire", payload="detected")
+    Note over P: PUBACK が来ない...<br/>タイムアウト
+    P->>B: PUBLISH (QoS=1, id=2, DUP=1, topic="alert/fire", payload="detected")
+    B->>P: PUBACK (id=2)
+    Note over P,S: DUP=1 により再送パケットと識別可能

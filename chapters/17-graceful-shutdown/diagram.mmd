@@ -1,0 +1,46 @@
+sequenceDiagram
+    participant Signal as シグナル<br/>(Ctrl+C / SIGTERM)
+    participant SM as ShutdownManager
+    participant Accept as accept ループ
+    participant Reader as リーダータスク
+    participant Writer as ライタータスク
+    participant Queue as Io.Queue
+    participant Client as クライアント
+    participant Store as Session/Retain Store
+
+    Note over Signal,Store: === シャットダウンシーケンス ===
+
+    Signal->>SM: requestShutdown()
+    activate SM
+
+    Note over SM: Step 1: stop_requested.store(true, .release)
+    SM->>SM: stop_event.set(io)
+    Note over SM: Step 2: ブロック中タスクを起動
+
+    SM-->>Accept: stop_requested = true
+    Note over Accept: Step 3: accept ループ終了
+
+    deactivate SM
+
+    Note over Accept,Client: Step 4: DISCONNECT 送信
+    Accept->>Client: DISCONNECT パケット (0xE0, 0x00)
+    Accept->>Client: DISCONNECT パケット (0xE0, 0x00)
+
+    Note over Accept,Client: Step 5: Will メッセージ配信
+    Accept->>Client: Will メッセージ<br/>(未クリーン切断のクライアント分)
+
+    Note over Queue,Writer: Step 6: キューのドレイン
+    Queue->>Writer: getOneUncancelable(io)
+    Writer->>Client: 残メッセージ送信
+    Queue->>Writer: null (空)
+
+    Note over Reader,Writer: Step 7: TCP クローズ
+    Reader->>Reader: stream.close()
+    Writer->>Writer: stream.close()
+
+    Note over Store: Step 8: ストア解放
+    Store->>Store: session_manager.deinit()
+    Store->>Store: retain_store.deinit()
+
+    Note over SM: shutdown_complete.set(io)
+    Note over Signal,Store: === シャットダウン完了 ===

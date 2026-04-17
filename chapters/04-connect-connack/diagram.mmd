@@ -1,0 +1,34 @@
+sequenceDiagram
+    participant C as Client
+    participant B as Broker
+
+    Note over C,B: TCP接続確立後
+
+    C->>B: CONNECT
+    Note right of C: protocol="MQTT"<br/>level=4 (v3.1.1)<br/>clean_session=true<br/>keep_alive=60<br/>client_id="zig-client"
+
+    alt プロトコルレベル確認
+        B->>B: protocol_level == 4 ?
+    end
+
+    alt 接続承認
+        B->>C: CONNACK
+        Note left of B: session_present=false<br/>return_code=0 (accepted)
+        Note over C,B: 接続成功 -- Pub/Sub 可能
+    else 接続拒否 (例: 認証エラー)
+        B->>C: CONNACK
+        Note left of B: session_present=false<br/>return_code=4 (bad_credentials)
+        B--xC: TCP接続を切断
+    end
+
+    Note over C,B: Keep Alive による生存確認
+
+    loop Keep Alive 間隔ごと
+        C->>B: PINGREQ
+        B->>C: PINGRESP
+    end
+
+    Note over C,B: 切断
+
+    C->>B: DISCONNECT
+    C--xB: TCP接続を閉じる

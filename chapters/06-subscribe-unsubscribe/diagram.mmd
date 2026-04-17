@@ -1,0 +1,30 @@
+sequenceDiagram
+    participant C1 as Client A
+    participant B as Broker
+    participant C2 as Client B
+
+    Note over C1,C2: 購読の登録
+
+    C1->>B: SUBSCRIBE (id=10)<br/>filters: ["sensor/temp" QoS 1,<br/>"sensor/humidity" QoS 0]
+    B->>C1: SUBACK (id=10)<br/>codes: [0x01, 0x00]
+    Note left of B: 2つとも要求通りの QoS で承認
+
+    C2->>B: SUBSCRIBE (id=20)<br/>filters: ["sensor/temp" QoS 0]
+    B->>C2: SUBACK (id=20)<br/>codes: [0x00]
+
+    Note over C1,C2: メッセージ配信
+
+    Note over B: PUBLISH "sensor/temp" を受信
+    B->>C1: PUBLISH (QoS=1, id=50)<br/>topic="sensor/temp"
+    C1->>B: PUBACK (id=50)
+    B->>C2: PUBLISH (QoS=0)<br/>topic="sensor/temp"
+    Note right of C2: QoS 0 なので PUBACK 不要
+
+    Note over C1,C2: 購読の解除
+
+    C1->>B: UNSUBSCRIBE (id=11)<br/>filters: ["sensor/temp"]
+    B->>C1: UNSUBACK (id=11)
+
+    Note over B: 再び PUBLISH "sensor/temp" を受信
+    Note left of B: Client A はもう購読していない
+    B->>C2: PUBLISH (QoS=0)<br/>topic="sensor/temp"

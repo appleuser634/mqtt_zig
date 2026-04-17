@@ -1,0 +1,38 @@
+---
+title: MQTT パケットフォーマット
+---
+graph TD
+    subgraph PACKET["MQTT パケット"]
+        direction TB
+
+        subgraph FH["固定ヘッダー (Fixed Header) — 全パケット共通"]
+            direction LR
+            BYTE1["Byte 1<br/>────────────────<br/>bit 7-4: パケットタイプ (1-14)<br/>bit 3-0: フラグ"]
+            RL["Byte 2-5<br/>────────────────<br/>Remaining Length<br/>(可変長エンコーディング)<br/>1〜4 バイト"]
+            BYTE1 --> RL
+        end
+
+        subgraph VH["可変ヘッダー (Variable Header) — パケットタイプにより異なる"]
+            direction LR
+            VH_CONNECT["CONNECT:<br/>Protocol Name (6B)<br/>Protocol Level (1B)<br/>Connect Flags (1B)<br/>Keep Alive (2B)"]
+            VH_PUBLISH["PUBLISH:<br/>Topic Name (2+NB)<br/>Packet ID (2B)*<br/>* QoS 1/2 のみ"]
+            VH_PKID["SUBSCRIBE / PUBACK 等:<br/>Packet Identifier (2B)"]
+            VH_CONNACK["CONNACK:<br/>Session Present (1B)<br/>Return Code (1B)"]
+        end
+
+        subgraph PL["ペイロード (Payload) — パケットタイプにより異なる"]
+            direction LR
+            PL_CONNECT["CONNECT:<br/>Client ID<br/>Will Topic*<br/>Will Message*<br/>Username*<br/>Password*"]
+            PL_PUBLISH["PUBLISH:<br/>アプリケーション<br/>データ (任意バイト列)"]
+            PL_SUBSCRIBE["SUBSCRIBE:<br/>Topic Filter + QoS<br/>(1組以上)"]
+            PL_NONE["PINGREQ / PINGRESP /<br/>DISCONNECT:<br/>ペイロードなし"]
+        end
+
+        FH --> VH
+        VH --> PL
+    end
+
+    style PACKET fill:#f9f9f9,stroke:#333
+    style FH fill:#e3f2fd,stroke:#1565c0
+    style VH fill:#fff3e0,stroke:#e65100
+    style PL fill:#e8f5e9,stroke:#2e7d32

@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(zig build:*)",
+      "Bash(ls:*)",
+      "Bash(/tmp/pdfgen/bin/python:*)",
+      "Bash(grep -rn \"std\\\\.net\\\\.\" chapters/1[5-8]*/README.md)",
+      "Bash(grep -rn \"net\\\\.Address\" chapters/1[5-8]*/README.md)",
+      "Bash(grep -rn \"readByte\" chapters/1[5-8]*/README.md)",
+      "Bash(grep -rn \"\\\\.accept\\(\\)\" chapters/1[5-8]*/README.md)",
+      "Bash(grep -rn \"\\\\.close\\(\\)\" chapters/1[5-8]*/README.md)",
+      "Bash(grep:*)"
+    ]
+  }
+}

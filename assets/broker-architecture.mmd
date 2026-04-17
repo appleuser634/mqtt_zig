@@ -1,0 +1,56 @@
+---
+title: MQTT Broker アーキテクチャ
+---
+graph TB
+    CLIENT1["クライアント A<br/>(Publisher)"]
+    CLIENT2["クライアント B<br/>(Subscriber)"]
+    CLIENT3["クライアント C<br/>(Pub/Sub)"]
+
+    subgraph BROKER["MQTT Broker"]
+        direction TB
+
+        LISTENER["TCP Listener<br/>────────────<br/>ポート 1883 で<br/>着信接続を待ち受け"]
+
+        subgraph HANDLER["Connection Handler (接続ハンドラー)"]
+            direction LR
+            PARSE["パケットパーサー<br/>────────────<br/>固定ヘッダー解析<br/>可変ヘッダー解析<br/>ペイロード解析"]
+            DISPATCH["パケット<br/>ディスパッチャー<br/>────────────<br/>パケットタイプに<br/>応じた処理を実行"]
+            PARSE --> DISPATCH
+        end
+
+        CONNMAP["Connection Map<br/>(接続マップ)<br/>────────────<br/>Client ID →<br/>Stream の対応表"]
+
+        SESSION["Session Manager<br/>(セッション管理)<br/>────────────<br/>Clean Session 制御<br/>購読状態の保持<br/>未配信メッセージ"]
+
+        TOPIC["Topic Router<br/>(トピックルーター)<br/>────────────<br/>トピックマッチング<br/>ワイルドカード処理<br/>メッセージ配信"]
+
+        RETAIN["Retain Store<br/>(保持メッセージ)<br/>────────────<br/>トピックごとの<br/>最新 Retain メッセージ"]
+
+        WILL["Will Store<br/>(遺言メッセージ)<br/>────────────<br/>異常切断時に<br/>発行するメッセージ"]
+
+        LISTENER --> HANDLER
+        DISPATCH --> CONNMAP
+        DISPATCH --> SESSION
+        DISPATCH --> TOPIC
+        DISPATCH --> RETAIN
+        DISPATCH --> WILL
+        TOPIC --> CONNMAP
+    end
+
+    CLIENT1 -->|"TCP 接続"| LISTENER
+    CLIENT2 -->|"TCP 接続"| LISTENER
+    CLIENT3 -->|"TCP 接続"| LISTENER
+    CONNMAP -->|"PUBLISH 配信"| CLIENT2
+    CONNMAP -->|"PUBLISH 配信"| CLIENT3
+
+    style BROKER fill:#f5f5f5,stroke:#333,stroke-width:2px
+    style LISTENER fill:#e3f2fd,stroke:#1565c0
+    style HANDLER fill:#fff3e0,stroke:#e65100
+    style CONNMAP fill:#fce4ec,stroke:#c62828
+    style SESSION fill:#e8f5e9,stroke:#2e7d32
+    style TOPIC fill:#f3e5f5,stroke:#6a1b9a
+    style RETAIN fill:#e0f2f1,stroke:#00695c
+    style WILL fill:#fff8e1,stroke:#f57f17
+    style CLIENT1 fill:#e1f5fe,stroke:#0277bd
+    style CLIENT2 fill:#e1f5fe,stroke:#0277bd
+    style CLIENT3 fill:#e1f5fe,stroke:#0277bd

@@ -1,0 +1,57 @@
+graph LR
+    subgraph PublisherFlow["パブリッシャーからの PUBLISH"]
+        PubClient["クライアント A<br/>(Publisher)"]
+        Reader["リーダータスク A<br/>パケットデコード"]
+        Route["routePublish<br/>サブスクライバー検索"]
+    end
+
+    subgraph SubscriberQueues["per-client メッセージキュー"]
+        direction TB
+        Q1["Io.Queue(Message)<br/>クライアント B 用<br/>[■■■□□□□□]"]
+        Q2["Io.Queue(Message)<br/>クライアント C 用<br/>[■■□□□□□□]"]
+        Q3["Io.Queue(Message)<br/>クライアント D 用<br/>[■■■■■■■■]<br/>⚠ 満杯 → バックプレッシャー"]
+    end
+
+    subgraph Writers["ライタータスク"]
+        W1["ライター B<br/>getOne → TCP write"]
+        W2["ライター C<br/>getOne → TCP write"]
+        W3["ライター D<br/>getOne → TCP write<br/>(遅い)"]
+    end
+
+    SubB["クライアント B<br/>(Subscriber)"]
+    SubC["クライアント C<br/>(Subscriber)"]
+    SubD["クライアント D<br/>(Slow Subscriber)"]
+
+    PubClient -->|PUBLISH| Reader
+    Reader --> Route
+    Route -->|putOne| Q1
+    Route -->|putOne| Q2
+    Route -->|putOne ブロック!| Q3
+
+    Q1 -->|getOne| W1
+    Q2 -->|getOne| W2
+    Q3 -->|getOne| W3
+
+    W1 -->|TCP| SubB
+    W2 -->|TCP| SubC
+    W3 -->|TCP 遅延| SubD
+
+    subgraph Lifecycle["キューのライフサイクル"]
+        direction TB
+        Init["init(&buffer)<br/>固定サイズバッファ確保"]
+        Put["putOne(io, msg)<br/>満杯時ブロック"]
+        Get["getOne(io)<br/>空時ブロック"]
+        Close["close(io)<br/>Canceled エラー通知"]
+        Drain["getOneUncancelable(io)<br/>残メッセージ取り出し"]
+
+        Init --> Put
+        Put --> Get
+        Get --> Close
+        Close --> Drain
+    end
+
+    style SubscriberQueues fill:#fff3e0,stroke:#e65100
+    style Writers fill:#e8f5e9,stroke:#2e7d32
+    style PublisherFlow fill:#e3f2fd,stroke:#1565c0
+    style Lifecycle fill:#f3e5f5,stroke:#6a1b9a
+    style Q3 fill:#ffcdd2,stroke:#c62828

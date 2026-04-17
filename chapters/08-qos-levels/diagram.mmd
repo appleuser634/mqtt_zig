@@ -1,0 +1,30 @@
+sequenceDiagram
+    participant P as Publisher
+    participant B as Broker
+    participant S as Subscriber
+
+    Note over P,S: QoS 0: At most once
+    P->>B: PUBLISH (QoS 0)
+    B->>S: PUBLISH (QoS 0)
+
+    Note over P,S: QoS 1: At least once
+    P->>B: PUBLISH (QoS 1, id=1)
+    B->>S: PUBLISH (QoS 1, id=7)
+    S->>B: PUBACK (id=7)
+    B->>P: PUBACK (id=1)
+
+    Note over P,S: QoS 1: 再送シナリオ
+    P->>B: PUBLISH (QoS 1, id=2)
+    B->>S: PUBLISH (QoS 1, id=8)
+    Note right of S: PUBACK がタイムアウト
+    B->>S: PUBLISH (QoS 1, id=8, DUP=1)
+    S->>B: PUBACK (id=8)
+    B->>P: PUBACK (id=2)
+
+    Note over P,S: QoS 2: Exactly once (概念のみ)
+    P->>B: PUBLISH (QoS 2, id=3)
+    B->>P: PUBREC (id=3)
+    P->>B: PUBREL (id=3)
+    B->>S: PUBLISH (QoS 2, id=9)
+    S->>B: PUBACK (id=9)
+    B->>P: PUBCOMP (id=3)

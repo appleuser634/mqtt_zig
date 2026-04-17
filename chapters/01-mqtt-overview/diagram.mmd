@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant P as Publisher<br/>(センサー)
+    participant B as Broker
+    participant S1 as Subscriber A<br/>(ダッシュボード)
+    participant S2 as Subscriber B<br/>(ログ収集)
+
+    Note over S1,S2: 1. サブスクライバーがトピックを購読
+    S1->>B: SUBSCRIBE "sensor/temp"
+    B->>S1: SUBACK (成功)
+    S2->>B: SUBSCRIBE "sensor/temp"
+    B->>S2: SUBACK (成功)
+
+    Note over P,B: 2. パブリッシャーがメッセージを発行
+    P->>B: PUBLISH "sensor/temp"<br/>payload = "25.3"
+
+    Note over B,S2: 3. ブローカーが購読者に配信
+    B->>S1: PUBLISH "sensor/temp"<br/>payload = "25.3"
+    B->>S2: PUBLISH "sensor/temp"<br/>payload = "25.3"
+
+    Note over P,B: 4. 別のメッセージを発行
+    P->>B: PUBLISH "sensor/temp"<br/>payload = "26.1"
+    B->>S1: PUBLISH "sensor/temp"<br/>payload = "26.1"
+    B->>S2: PUBLISH "sensor/temp"<br/>payload = "26.1"

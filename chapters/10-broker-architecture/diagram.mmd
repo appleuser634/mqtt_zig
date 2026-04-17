@@ -1,0 +1,39 @@
+graph TB
+    subgraph MqttBroker["MQTT ブローカー"]
+        Listener["Listener<br/>server.zig<br/>TCP accept ループ"]
+
+        subgraph Threads["スレッドプール (Thread-per-connection)"]
+            CH1["ConnectionHandler 1<br/>connection.zig"]
+            CH2["ConnectionHandler 2<br/>connection.zig"]
+            CH3["ConnectionHandler N<br/>connection.zig"]
+        end
+
+        subgraph SharedState["共有状態 (Mutex 保護)"]
+            SM["SessionManager<br/>session.zig"]
+            RS["RetainStore<br/>retain.zig"]
+        end
+    end
+
+    Client1["クライアント A<br/>(Publisher)"]
+    Client2["クライアント B<br/>(Subscriber)"]
+    Client3["クライアント C<br/>(Pub/Sub)"]
+
+    Client1 <-->|TCP| CH1
+    Client2 <-->|TCP| CH2
+    Client3 <-->|TCP| CH3
+
+    Listener -->|accept & spawn| CH1
+    Listener -->|accept & spawn| CH2
+    Listener -->|accept & spawn| CH3
+
+    CH1 -->|lock/unlock| SM
+    CH2 -->|lock/unlock| SM
+    CH3 -->|lock/unlock| SM
+
+    CH1 -->|lock/unlock| RS
+    CH2 -->|lock/unlock| RS
+    CH3 -->|lock/unlock| RS
+
+    style SharedState fill:#ffeeba,stroke:#856404
+    style Threads fill:#d4edda,stroke:#155724
+    style MqttBroker fill:#f8f9fa,stroke:#343a40

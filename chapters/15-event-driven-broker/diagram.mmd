@@ -1,0 +1,62 @@
+graph TB
+    subgraph ThreadModel["Thread-per-connection モデル（第10章）"]
+        direction TB
+        MainThread["メインスレッド<br/>accept ループ"]
+        T1["スレッド 1<br/>クライアント A 専用"]
+        T2["スレッド 2<br/>クライアント B 専用"]
+        T3["スレッド 3<br/>クライアント C 専用"]
+        TN["スレッド N<br/>クライアント N 専用"]
+
+        MainThread -->|spawn| T1
+        MainThread -->|spawn| T2
+        MainThread -->|spawn| T3
+        MainThread -->|spawn| TN
+    end
+
+    subgraph EventModel["イベント駆動モデル（本章）"]
+        direction TB
+        EventLoop["イベントループ<br/>io.async による多重化"]
+        Backend["Io バックエンド"]
+        Threaded["Threaded<br/>スレッドプール"]
+        Evented["Evented<br/>io_uring / kqueue"]
+
+        subgraph Tasks["非同期タスク"]
+            TaskA["タスク A<br/>クライアント A"]
+            TaskB["タスク B<br/>クライアント B"]
+            TaskC["タスク C<br/>クライアント C"]
+            TaskN["タスク N<br/>クライアント N"]
+        end
+
+        EventLoop --> Tasks
+        Tasks --> Backend
+        Backend --> Threaded
+        Backend --> Evented
+    end
+
+    subgraph FanOut["ファンアウト配信（Io.Group）"]
+        direction LR
+        Publish["PUBLISH 受信"]
+        Group["std.Io.Group"]
+        Sub1["サブスクライバー 1"]
+        Sub2["サブスクライバー 2"]
+        Sub3["サブスクライバー 3"]
+        Await["group.await<br/>全完了待機"]
+
+        Publish --> Group
+        Group -->|async| Sub1
+        Group -->|async| Sub2
+        Group -->|async| Sub3
+        Sub1 --> Await
+        Sub2 --> Await
+        Sub3 --> Await
+    end
+
+    ClientA["クライアント A"] <-->|TCP| EventLoop
+    ClientB["クライアント B"] <-->|TCP| EventLoop
+    ClientC["クライアント C"] <-->|TCP| EventLoop
+
+    style ThreadModel fill:#ffcccc,stroke:#cc0000
+    style EventModel fill:#ccffcc,stroke:#008800
+    style FanOut fill:#cce5ff,stroke:#0066cc
+    style Tasks fill:#e8f5e9,stroke:#2e7d32
+    style Backend fill:#fff3e0,stroke:#e65100
