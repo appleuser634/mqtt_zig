@@ -324,9 +324,10 @@ tr:nth-child(even) {
     padding-bottom: 6pt;
 }
 
-/* 図（zigraph Unicode レンダリング） */
+/* 図（Mermaid SVG） */
 .diagram {
     margin-top: 16pt;
+    page-break-inside: avoid;
 }
 .diagram h3 {
     font-size: 12pt;
@@ -334,16 +335,29 @@ tr:nth-child(even) {
     border-left: 4px solid #1a73e8;
     padding-left: 10pt;
 }
-.diagram-pre {
-    background: #f8f9fa;
-    border: 1px solid #ddd;
-    border-left: 4px solid #1a73e8;
-    padding: 12pt 16pt;
-    font-size: 7.5pt;
-    line-height: 1.3;
-    font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
-    white-space: pre;
-    overflow-wrap: normal;
+.diagram-svg {
+    text-align: center;
+    margin: 8pt 0;
+    padding: 8pt;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 4pt;
+}
+.diagram-svg svg {
+    max-width: 100%;
+    height: auto;
+}
+.diagram-inline {
+    text-align: center;
+    margin: 12pt 0;
+    padding: 8pt;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 4pt;
+}
+.diagram-inline svg {
+    max-width: 100%;
+    height: auto;
 }
 
 /* blockquote */
@@ -390,49 +404,39 @@ def read_file(path):
         return f.read()
 
 
-def render_mermaid_file(mermaid_src):
-    """Mermaid ソースを zigraph --unicode でレンダリングする。"""
+def mermaid_to_svg(mermaid_src):
+    """Mermaid ソースを mmdc (mermaid-cli) で SVG に変換する。"""
     try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.mmd', delete=False) as f:
+            f.write(mermaid_src)
+            mmd_path = f.name
+        svg_path = mmd_path.replace('.mmd', '.svg')
         result = subprocess.run(
-            ["zigraph", "--unicode"],
-            input=mermaid_src,
-            capture_output=True,
-            text=True,
-            timeout=10,
+            ["npx", "--yes", "@mermaid-js/mermaid-cli",
+             "-i", mmd_path, "-o", svg_path, "-b", "white", "--width", "700"],
+            capture_output=True, text=True, timeout=30,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            # zigraph 出力の <br/> タグをスペースに置換
-            output = result.stdout.rstrip()
-            output = output.replace("<br/>", " ")
-            output = output.replace("<br>", " ")
-            return output
+        if result.returncode == 0 and os.path.exists(svg_path):
+            with open(svg_path, 'r') as f:
+                svg = f.read()
+            os.remove(mmd_path)
+            os.remove(svg_path)
+            return svg
+        os.remove(mmd_path)
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return None
 
 
 def render_mermaid_blocks(text):
-    """Markdown 中の ```mermaid ブロックを zigraph --unicode でレンダリングし、
-    通常のテキストコードブロックに置換する。"""
+    """Markdown 中の ```mermaid ブロックを SVG に変換して HTML img タグに置換する。"""
     def replace_mermaid(match):
         mermaid_src = match.group(1)
-        try:
-            result = subprocess.run(
-                ["zigraph", "--unicode"],
-                input=mermaid_src,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                # レンダリング成功: 通常のコードブロックとして埋め込む
-                output = result.stdout.rstrip().replace("<br/>", " ").replace("<br>", " ")
-                return "```\n" + output + "\n```"
-            else:
-                # 失敗時: 元の Mermaid ソースをそのまま返す
-                return match.group(0)
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return match.group(0)
+        svg = mermaid_to_svg(mermaid_src)
+        if svg:
+            # SVG を直接 HTML に埋め込む
+            return f'\n<div class="diagram-inline">{svg}</div>\n'
+        return match.group(0)
 
     return re.sub(
         r'```mermaid\n(.*?)```',
@@ -644,17 +648,27 @@ def build_chapters():
             readme_md = strip_run_instructions(readme_md)
             readme_html = md_to_html(readme_md)
 
-            # diagram.mmd があれば zigraph でレンダリングして追加
+            # diagram.svg があれば埋め込む（事前に mmdc で生成済み）
+            # なければ diagram.mmd から動的に生成
             diagram_html = ""
-            diagram_path = os.path.join(ch_dir, "diagram.mmd")
-            if os.path.exists(diagram_path):
-                mmd_src = read_file(diagram_path)
-                diagram_rendered = render_mermaid_file(mmd_src)
-                if diagram_rendered:
+            svg_path = os.path.join(ch_dir, "diagram.svg")
+            mmd_path = os.path.join(ch_dir, "diagram.mmd")
+            if os.path.exists(svg_path):
+                svg_content = read_file(svg_path)
+                diagram_html = f"""
+                <div class="diagram">
+                    <h3>図</h3>
+                    <div class="diagram-svg">{svg_content}</div>
+                </div>
+                """
+            elif os.path.exists(mmd_path):
+                mmd_src = read_file(mmd_path)
+                svg = mermaid_to_svg(mmd_src)
+                if svg:
                     diagram_html = f"""
                     <div class="diagram">
                         <h3>図</h3>
-                        <pre class="diagram-pre">{html.escape(diagram_rendered)}</pre>
+                        <div class="diagram-svg">{svg}</div>
                     </div>
                     """
 
