@@ -12,8 +12,15 @@ pub fn main(init: std.process.Init) !void {
 
     std.log.info("Connecting to {s}:{d}...", .{ host, port });
 
+    // 複数サブスクライバーを同時起動できるよう、ユニークな client_id を生成
+    // スタック変数のアドレスをシードとして利用（プロセスごとに異なる）
+    var entropy: u32 = undefined;
+    const seed_addr: usize = @intFromPtr(&entropy);
+    var id_buf: [32]u8 = undefined;
+    const client_id = std.fmt.bufPrint(&id_buf, "mqtt-sub-{x}", .{seed_addr}) catch "mqtt-sub-default";
+
     const client = try MqttClient.connect(init.gpa, init.io, host, port, ConnectOptions{
-        .client_id = "mqtt-zig-sub",
+        .client_id = client_id,
     });
 
     const filters = [_]TopicFilter{

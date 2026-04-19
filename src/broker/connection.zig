@@ -126,6 +126,14 @@ pub const ConnectionHandler = struct {
             return error.ConnectionClosed;
         }
 
+        // MQTT 3.1.1 Section 3.1.4: 同一 client_id の旧接続を切断（クライアント引き継ぎ）
+        if (self.connections.get(connect_pkt.client_id)) |old_conn| {
+            if (old_conn != self) {
+                std.log.info("Takeover: disconnecting old connection for {s}", .{connect_pkt.client_id});
+                old_conn.stream.close(old_conn.io);
+            }
+        }
+
         const result = try self.session_manager.handleConnect(
             connect_pkt.client_id,
             connect_pkt.flags.clean_session,

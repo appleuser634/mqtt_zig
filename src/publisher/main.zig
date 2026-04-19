@@ -12,8 +12,13 @@ pub fn main(init: std.process.Init) !void {
 
     std.log.info("Connecting to {s}:{d}...", .{ host, port });
 
+    var entropy: u32 = undefined;
+    const seed_addr: usize = @intFromPtr(&entropy);
+    var id_buf: [32]u8 = undefined;
+    const client_id = std.fmt.bufPrint(&id_buf, "mqtt-pub-{x}", .{seed_addr}) catch "mqtt-pub-default";
+
     const client = try MqttClient.connect(init.gpa, init.io, host, port, ConnectOptions{
-        .client_id = "mqtt-zig-pub",
+        .client_id = client_id,
     });
 
     std.log.info("Connected. Publishing {d} message(s) to '{s}'...", .{ count, topic });
