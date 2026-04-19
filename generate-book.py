@@ -12,6 +12,8 @@ MQTT Zig チュートリアル — PDF 電子本生成スクリプト
 import html
 import os
 import re
+import subprocess
+import tempfile
 
 import markdown
 import weasyprint
@@ -76,6 +78,7 @@ PARTS = [
             ("16-io-queue-messaging", "Io.Queueによるメッセージング", "ロックフリーなメッセージルーティング"),
             ("17-graceful-shutdown", "Graceful Shutdown", "安全な停止パターンとWillメッセージ"),
             ("18-ziglike-patterns", "Zigらしい設計パターン", "Juicy Main・RwLock・comptime活用"),
+            ("19-benchmark-report", "ベンチマークレポート", "Debug vs ReleaseFast vs mosquitto 性能比較"),
         ],
     },
 ]
@@ -321,6 +324,28 @@ tr:nth-child(even) {
     padding-bottom: 6pt;
 }
 
+/* 図（zigraph Unicode レンダリング） */
+.diagram {
+    margin-top: 16pt;
+}
+.diagram h3 {
+    font-size: 12pt;
+    color: #1a73e8;
+    border-left: 4px solid #1a73e8;
+    padding-left: 10pt;
+}
+.diagram-pre {
+    background: #f8f9fa;
+    border: 1px solid #ddd;
+    border-left: 4px solid #1a73e8;
+    padding: 12pt 16pt;
+    font-size: 7.5pt;
+    line-height: 1.3;
+    font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+    white-space: pre;
+    overflow-wrap: normal;
+}
+
 /* blockquote */
 blockquote {
     border-left: 4px solid #1a73e8;
@@ -365,8 +390,62 @@ def read_file(path):
         return f.read()
 
 
+def render_mermaid_file(mermaid_src):
+    """Mermaid ソースを zigraph --unicode でレンダリングする。"""
+    try:
+        result = subprocess.run(
+            ["zigraph", "--unicode"],
+            input=mermaid_src,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # zigraph 出力の <br/> タグをスペースに置換
+            output = result.stdout.rstrip()
+            output = output.replace("<br/>", " ")
+            output = output.replace("<br>", " ")
+            return output
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def render_mermaid_blocks(text):
+    """Markdown 中の ```mermaid ブロックを zigraph --unicode でレンダリングし、
+    通常のテキストコードブロックに置換する。"""
+    def replace_mermaid(match):
+        mermaid_src = match.group(1)
+        try:
+            result = subprocess.run(
+                ["zigraph", "--unicode"],
+                input=mermaid_src,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # レンダリング成功: 通常のコードブロックとして埋め込む
+                output = result.stdout.rstrip().replace("<br/>", " ").replace("<br>", " ")
+                return "```\n" + output + "\n```"
+            else:
+                # 失敗時: 元の Mermaid ソースをそのまま返す
+                return match.group(0)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return match.group(0)
+
+    return re.sub(
+        r'```mermaid\n(.*?)```',
+        replace_mermaid,
+        text,
+        flags=re.DOTALL,
+    )
+
+
 def md_to_html(text):
     """Markdown テキストを HTML に変換する。fenced code は Pygments でハイライトする。"""
+    # Mermaid ブロックを zigraph でレンダリングしてから Markdown 変換
+    text = render_mermaid_blocks(text)
     result = markdown.markdown(
         text,
         extensions=["tables", "fenced_code", "codehilite", "toc"],
@@ -565,11 +644,26 @@ def build_chapters():
             readme_md = strip_run_instructions(readme_md)
             readme_html = md_to_html(readme_md)
 
+            # diagram.mmd があれば zigraph でレンダリングして追加
+            diagram_html = ""
+            diagram_path = os.path.join(ch_dir, "diagram.mmd")
+            if os.path.exists(diagram_path):
+                mmd_src = read_file(diagram_path)
+                diagram_rendered = render_mermaid_file(mmd_src)
+                if diagram_rendered:
+                    diagram_html = f"""
+                    <div class="diagram">
+                        <h3>図</h3>
+                        <pre class="diagram-pre">{html.escape(diagram_rendered)}</pre>
+                    </div>
+                    """
+
             parts_html.append(f"""
             <div class="chapter" id="{anchor}">
                 <h2>{label}</h2>
                 <p style="color:#666; font-style:italic; margin-top:-6pt;">{desc}</p>
                 {readme_html}
+                {diagram_html}
             </div>
             """)
 

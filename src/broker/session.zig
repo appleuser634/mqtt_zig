@@ -189,4 +189,27 @@ pub const SessionManager = struct {
 
         return results.toOwnedSlice();
     }
+
+    /// 改善版: スタック上の固定バッファにマッチ結果を書き込む（ゼロアロケーション）
+    pub fn findMatchingSessionsStack(self: *SessionManager, topic_name: []const u8, buf: []MatchResult) []MatchResult {
+        self.rwlock.lockSharedUncancelable(self.io);
+        defer self.rwlock.unlockShared(self.io);
+
+        var count: usize = 0;
+        var iter = self.sessions.iterator();
+        while (iter.next()) |entry| {
+            if (count >= buf.len) break;
+            const session = entry.value_ptr;
+            if (session.connected) {
+                if (session.matchesTopic(topic_name)) |qos| {
+                    buf[count] = .{
+                        .client_id = session.client_id,
+                        .qos = qos,
+                    };
+                    count += 1;
+                }
+            }
+        }
+        return buf[0..count];
+    }
 };

@@ -18,6 +18,10 @@ fn ManagedArrayList(comptime T: type) type {
 }
 
 /// クライアント接続ハンドラ
+/// 改善ポイント:
+///  - writer を ConnectionHandler にキャッシュし、fan-out で再利用
+///  - PUBLISH の fan-out で生バイト列を直接転送（再エンコード不要、ゼロアロケーション）
+///  - findMatchingSessions をスタック固定バッファで受け取り
 pub const ConnectionHandler = struct {
     stream: net.Stream,
     io: std.Io,
@@ -27,7 +31,14 @@ pub const ConnectionHandler = struct {
     client_id: ?[]const u8 = null,
     connections: *ConnectionMap,
 
+    // 改善: 各接続が持つキャッシュ済み writer (fan-out 送信用)
+    cached_write_buf: [8192]u8 = undefined,
+    cached_writer: ?net.Stream.Writer = null,
+
     pub fn handle(self: *ConnectionHandler) void {
+        // writer キャッシュを初期化
+        self.cached_writer = self.stream.writer(self.io, &self.cached_write_buf);
+
         self.run() catch |err| {
             std.log.debug("connection error: {s}", .{@errorName(err)});
         };
@@ -42,52 +53,58 @@ pub const ConnectionHandler = struct {
     }
 
     fn run(self: *ConnectionHandler) !void {
-        // reader/writer をループの外で1回だけ作成し、バッファを保持する。
-        // これにより buffered reader が先読みしたデータが次の readPacket でも有効になる。
         var read_buf: [8192]u8 = undefined;
         var reader = self.stream.reader(self.io, &read_buf);
         var write_buf: [8192]u8 = undefined;
         var writer = self.stream.writer(self.io, &write_buf);
 
         while (true) {
-            const result = readPacket(&reader.interface, self.allocator) catch |err| switch (err) {
+            // 改善: 固定ヘッダを含む生バイト列も保持し、fan-out で再利用
+            var header_raw: [5]u8 = undefined;
+            const raw_result = readPacketRaw(&reader.interface, self.allocator, &header_raw) catch |err| switch (err) {
                 error.ConnectionClosed, error.EndOfStream => return,
                 else => return err,
             };
-            defer self.allocator.free(result.data);
+            defer self.allocator.free(raw_result.data);
 
-            self.dispatch(result.header, result.data, &writer.interface) catch |err| switch (err) {
+            self.dispatch(raw_result.header, raw_result.header_bytes, raw_result.data, &writer.interface) catch |err| switch (err) {
                 error.ConnectionClosed => return,
                 else => return err,
             };
         }
     }
 
-    const ReadResult = struct {
+    const RawReadResult = struct {
         header: codec.FixedHeader,
-        data: []u8,
+        header_bytes: []const u8, // 固定ヘッダの生バイト列
+        data: []u8, // remaining length 分のデータ
     };
 
-    fn readPacket(r: *Reader, allocator: Allocator) !ReadResult {
-        var header_buf: [5]u8 = undefined;
-        r.readSliceAll(header_buf[0..1]) catch |err| switch (err) {
+    /// 改善: 固定ヘッダの生バイト列も返す（fan-out でそのまま転送するため）
+    fn readPacketRaw(r: *Reader, allocator: Allocator, header_store: *[5]u8) !RawReadResult {
+        r.readSliceAll(header_store[0..1]) catch |err| switch (err) {
             error.EndOfStream => return error.ConnectionClosed,
             else => return err,
         };
 
         var rl_len: usize = 0;
         while (rl_len < 4) {
-            try r.readSliceAll(header_buf[1 + rl_len ..][0..1]);
+            try r.readSliceAll(header_store[1 + rl_len ..][0..1]);
             rl_len += 1;
-            if (header_buf[rl_len] & 0x80 == 0) break;
+            if (header_store[rl_len] & 0x80 == 0) break;
         }
 
-        const header = try codec.decodeFixedHeader(header_buf[0 .. 1 + rl_len]);
+        const header_size = 1 + rl_len;
+        const header = try codec.decodeFixedHeader(header_store[0..header_size]);
         const data = try allocator.alloc(u8, header.remaining_length);
         errdefer allocator.free(data);
         try r.readSliceAll(data);
 
-        return .{ .header = header, .data = data };
+        return .{
+            .header = header,
+            .header_bytes = header_store[0..header_size],
+            .data = data,
+        };
     }
 
     fn sendBytes(w: *Writer, data: []const u8) !void {
@@ -95,10 +112,10 @@ pub const ConnectionHandler = struct {
         try w.flush();
     }
 
-    fn dispatch(self: *ConnectionHandler, header: codec.FixedHeader, data: []u8, w: *Writer) !void {
+    fn dispatch(self: *ConnectionHandler, header: codec.FixedHeader, header_bytes: []const u8, data: []u8, w: *Writer) !void {
         switch (header.packet_type) {
             .connect => try self.handleConnect(data, w),
-            .publish => try self.handlePublish(header.flags, data, w),
+            .publish => try self.handlePublish(header.flags, header_bytes, data, w),
             .puback => {},
             .subscribe => try self.handleSubscribe(data, w),
             .unsubscribe => try self.handleUnsubscribe(data, w),
@@ -126,8 +143,6 @@ pub const ConnectionHandler = struct {
             return error.ConnectionClosed;
         }
 
-        // MQTT 3.1.1 Section 3.1.3.1: 空 client_id の場合はサーバーがユニーク ID を割り当て
-        // connect_pkt.client_id は常に free する（dupe で別コピーを作るため）
         defer self.allocator.free(connect_pkt.client_id);
 
         var id_buf: [32]u8 = undefined;
@@ -155,16 +170,31 @@ pub const ConnectionHandler = struct {
         std.log.info("Client connected: {s}", .{self.client_id.?});
     }
 
-    fn handlePublish(self: *ConnectionHandler, flags: u4, data: []u8, w: *Writer) !void {
-        const publish_pkt = try codec.decodePublish(self.allocator, flags, data);
-        defer {
-            self.allocator.free(publish_pkt.topic);
-            self.allocator.free(publish_pkt.payload);
+    /// 改善版 PUBLISH ハンドラ:
+    ///  1. QoS 0 の fan-out では元パケットのバイト列をそのまま転送（ゼロアロケーション）
+    ///  2. 各接続のキャッシュ済み writer を使い、毎回の writer 作成を回避
+    fn handlePublish(self: *ConnectionHandler, flags: u4, header_bytes: []const u8, data: []u8, w: *Writer) !void {
+        // QoS 0 かつ retain=false の場合: デコード最小化、生バイト転送
+        const qos_bits: u2 = @intCast((flags >> 1) & 0x03);
+        const retain = (flags & 0x01) != 0;
+
+        // Retained メッセージの場合はフルデコードが必要
+        if (retain) {
+            const publish_pkt = try codec.decodePublish(self.allocator, flags, data);
+            defer {
+                self.allocator.free(publish_pkt.topic);
+                self.allocator.free(publish_pkt.payload);
+            }
+            try self.retain_store.store(publish_pkt.topic, publish_pkt.payload, publish_pkt.qos);
         }
 
-        // QoS 1: PUBACK をパブリッシャーに返す
-        if (publish_pkt.qos == .at_least_once) {
-            if (publish_pkt.packet_id) |pid| {
+        // QoS 1: PUBACK
+        if (qos_bits == 1) {
+            // トピック名の後に packet_id がある
+            const topic_len: u16 = (@as(u16, data[0]) << 8) | @as(u16, data[1]);
+            const pid_offset = 2 + topic_len;
+            if (pid_offset + 2 <= data.len) {
+                const pid: u16 = (@as(u16, data[pid_offset]) << 8) | @as(u16, data[pid_offset + 1]);
                 var buf: [4]u8 = undefined;
                 const puback = pkt.PubackPacket{ .packet_id = pid };
                 const encoded = try codec.encodePuback(&buf, &puback);
@@ -172,42 +202,39 @@ pub const ConnectionHandler = struct {
             }
         }
 
-        // Retained メッセージの処理
-        if (publish_pkt.retain) {
-            try self.retain_store.store(publish_pkt.topic, publish_pkt.payload, publish_pkt.qos);
-        }
+        // トピック名を抽出（マッチングに必要）
+        if (data.len < 2) return;
+        const topic_len: u16 = (@as(u16, data[0]) << 8) | @as(u16, data[1]);
+        if (2 + topic_len > data.len) return;
+        const topic = data[2..][0..topic_len];
 
-        // マッチするサブスクライバーにルーティング
-        const matches = try self.session_manager.findMatchingSessions(self.allocator, publish_pkt.topic);
-        defer self.allocator.free(matches);
+        // 改善: スタック固定バッファでマッチング（アロケーションなし）
+        var match_buf: [128]Session.SessionManager.MatchResult = undefined;
+        const matches = self.session_manager.findMatchingSessionsStack(topic, &match_buf);
+
+        // 改善: QoS 0 の場合、元のパケットバイト列をそのまま転送
+        // retain フラグを落とした固定ヘッダを構築
+        var fwd_header: [5]u8 = undefined;
+        @memcpy(fwd_header[0..header_bytes.len], header_bytes);
+        fwd_header[0] &= 0xFE; // retain = 0 にクリア
 
         for (matches) |match| {
             if (self.client_id) |my_id| {
                 if (std.mem.eql(u8, match.client_id, my_id)) continue;
             }
 
-            const effective_qos_val = @min(@intFromEnum(match.qos), @intFromEnum(publish_pkt.qos));
-            const effective_qos: QoS = @enumFromInt(effective_qos_val);
-
-            // 対象サブスクライバーの接続を取得してフォワード
+            // 改善: キャッシュ済み writer を使って直接送信
             if (self.connections.get(match.client_id)) |conn| {
-                const fwd_pkt = pkt.PublishPacket{
-                    .topic = publish_pkt.topic,
-                    .payload = publish_pkt.payload,
-                    .qos = effective_qos,
-                    .retain = false,
-                    .packet_id = if (effective_qos != .at_most_once) @as(?u16, 1) else null,
-                };
-                const encoded = codec.encodePublish(self.allocator, &fwd_pkt) catch continue;
-                defer self.allocator.free(encoded);
-                // 他クライアントへの送信: そのクライアントの stream に直接書く
-                var fwd_write_buf: [8192]u8 = undefined;
-                var fwd_writer = conn.stream.writer(conn.io, &fwd_write_buf);
-                sendBytes(&fwd_writer.interface, encoded) catch continue;
+                if (conn.cached_writer) |*cw| {
+                    // 固定ヘッダ + 元データをそのまま送信（ゼロアロケーション）
+                    cw.interface.writeAll(fwd_header[0..header_bytes.len]) catch continue;
+                    cw.interface.writeAll(data) catch continue;
+                    cw.interface.flush() catch continue;
+                }
             }
         }
 
-        std.log.debug("PUBLISH: {s} -> {s}", .{ publish_pkt.topic, publish_pkt.payload });
+        std.log.debug("PUBLISH: {s} -> {d} subscribers", .{ topic, matches.len });
     }
 
     fn handleSubscribe(self: *ConnectionHandler, data: []u8, w: *Writer) !void {
@@ -229,7 +256,6 @@ pub const ConnectionHandler = struct {
                     .exactly_once => .success_qos2,
                 });
 
-                // Retained メッセージを送信
                 const retained = try self.retain_store.getMatching(self.allocator, tf.filter);
                 defer {
                     for (retained) |rm| {
@@ -255,7 +281,6 @@ pub const ConnectionHandler = struct {
             }
         }
 
-        // SUBACK 送信
         const suback = pkt.SubackPacket{
             .packet_id = sub_pkt.packet_id,
             .return_codes = return_codes.items,

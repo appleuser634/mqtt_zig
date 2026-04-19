@@ -162,6 +162,29 @@ pub fn build(b: *std.Build) void {
     const sub_step = b.step("sub", "Run the MQTT subscriber");
     sub_step.dependOn(&run_sub.step);
 
+    // ── ベンチマーク実行ファイル ───────────────────────────
+    const bench = b.addExecutable(.{
+        .name = "mqtt-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "mqtt_types", .module = mqtt_types },
+                .{ .name = "mqtt_codec", .module = mqtt_codec },
+                .{ .name = "mqtt_packet", .module = mqtt_packet },
+            },
+        }),
+    });
+    b.installArtifact(bench);
+
+    const run_bench = b.addRunArtifact(bench);
+    if (b.args) |args| run_bench.addArgs(args);
+    run_bench.has_side_effects = true;
+    run_bench.stdio = .inherit;
+    const bench_step = b.step("bench", "Run the MQTT benchmark");
+    bench_step.dependOn(&run_bench.step);
+
     // ── テスト ──────────────────────────────────────────────
     const test_step = b.step("test", "Run unit tests");
 
