@@ -104,8 +104,10 @@ pub const SessionManager = struct {
 
         if (self.sessions.getPtr(client_id)) |existing| {
             if (clean_session) {
-                existing.deinit(self.allocator);
+                // remove を先に実行（キーは existing.client_id が参照しているため deinit の前に行う）
+                var old_session = existing.*;
                 _ = self.sessions.remove(client_id);
+                old_session.deinit(self.allocator);
                 var new_session = try Session.init(self.allocator, client_id, true);
                 new_session.connected = true;
                 try self.sessions.put(new_session.client_id, new_session);
@@ -130,8 +132,9 @@ pub const SessionManager = struct {
         if (self.sessions.getPtr(client_id)) |session| {
             session.connected = false;
             if (session.clean_session) {
-                session.deinit(self.allocator);
+                var old_session = session.*;
                 _ = self.sessions.remove(client_id);
+                old_session.deinit(self.allocator);
             }
         }
     }

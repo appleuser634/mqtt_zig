@@ -126,21 +126,22 @@ pub const ConnectionHandler = struct {
             return error.ConnectionClosed;
         }
 
-        // MQTT 3.1.1 Section 3.1.4: 同一 client_id の旧接続を切断（クライアント引き継ぎ）
-        if (self.connections.get(connect_pkt.client_id)) |old_conn| {
-            if (old_conn != self) {
-                std.log.info("Takeover: disconnecting old connection for {s}", .{connect_pkt.client_id});
-                old_conn.stream.close(old_conn.io);
-            }
-        }
+        // MQTT 3.1.1 Section 3.1.3.1: 空 client_id の場合はサーバーがユニーク ID を割り当て
+        // connect_pkt.client_id は常に free する（dupe で別コピーを作るため）
+        defer self.allocator.free(connect_pkt.client_id);
+
+        var id_buf: [32]u8 = undefined;
+        const actual_client_id: []const u8 = if (connect_pkt.client_id.len == 0)
+            std.fmt.bufPrint(&id_buf, "auto-{x}", .{@intFromPtr(self)}) catch "auto-fallback"
+        else
+            connect_pkt.client_id;
 
         const result = try self.session_manager.handleConnect(
-            connect_pkt.client_id,
+            actual_client_id,
             connect_pkt.flags.clean_session,
         );
 
-        self.client_id = try self.allocator.dupe(u8, connect_pkt.client_id);
-        self.allocator.free(connect_pkt.client_id);
+        self.client_id = try self.allocator.dupe(u8, actual_client_id);
         self.connections.put(self.client_id.?, self);
 
         var buf: [4]u8 = undefined;
